@@ -1,0 +1,5 @@
+if x == 5 then
+    stdout = get("message1");
+    x = 10;
+    stdout.log.print(x);
+endif
