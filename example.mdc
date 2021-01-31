@@ -1,5 +1,25 @@
-if x == 5 then
-    stdout = get("message1");
-    x = 10;
-    stdout.log.print(x);
-endif
+core = "nucleus1"
+capacity = 13000
+
+function launch_toggle(material, toHome, toLaunch)
+{
+	if (sensor(core, material) == capacity)
+	{
+		enable(toLaunch);
+		disable(toHome);
+	else
+	{
+		disable(toLaunch);
+		enable(toHome);
+	}
+}
+
+launch_toggle("phase-fabric", "unloader1", "unloader2");
+launch_toggle("surge-alloy", "unloader3", "unloader4");
+launch_toggle("silicon", "unloader5", "unloader6");
+launch_toggle("thorium", "unloader7", "unloader8");
+launch_toggle("titanium", "unloader9", "unloader10");
+launch_toggle("lead", "unloader11", "unloader12");
+launch_toggle("plastanium", "unloader13", "unloader14");
+launch_toggle("metaglass", "unloader15", "unloader16");
+launch_toggle("graphite", "unloader17", "unloader18");
