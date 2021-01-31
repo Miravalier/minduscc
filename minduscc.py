@@ -70,6 +70,7 @@ class MindusLexer(Lexer):
         IF, ELSE, ELIF, WHILE,
         FUNCTION,
         IDENTIFIER, NUMBER_LITERAL, STRING_LITERAL,
+        LOGICAL_NOT, BITWISE_NOT,
         ADD, SUBTRACT, MULTIPLY, DIVIDE, IDIVIDE, MODULUS,
         GREATER_THAN, LESS_THAN, GREATER_THAN_EQ, LESS_THAN_EQ,
         EQUALS, NOT_EQUALS, LOGICAL_AND, LOGICAL_OR,
@@ -84,7 +85,7 @@ class MindusLexer(Lexer):
 
     # Characters ignored between tokens
     ignore = ' \t'
-    ignore_comment = r'\#.*'
+    ignore_comment = r'/\*(.|\n)*?\*/'
 
     @_(r'\n+')
     def ignore_newline(self, t):
@@ -117,12 +118,11 @@ class MindusLexer(Lexer):
     LESS_THAN_EQ    = r'<='
     LESS_THAN       = r'<'
     EQUALS          = r'=='
-    NOT_EQUALS      = r'!='
-    BITWISE_AND     = r'&=?'
+    LOGICAL_NOT     = r'!=?'
+    BITWISE_NOT     = r'~'
+    BITWISE_AND     = r'&=?&?'
     BITWISE_XOR     = r'\^=?'
-    BITWISE_OR      = r'\|=?'
-    LOGICAL_AND     = r'&&'
-    LOGICAL_OR      = r'\|\|'
+    BITWISE_OR      = r'\|=?\|?'
     ASSIGN          = r'='
     OPEN_PAREN      = r'\('
     CLOSE_PAREN     = r'\)'
@@ -130,6 +130,8 @@ class MindusLexer(Lexer):
     CLOSE_BRACE     = r'\}'
     SEMICOLON       = r';'
     COMMA           = r','
+
+    LOGICAL_NOT['!='] = NOT_EQUALS
 
     ADD['+='] = ADD_ASSIGN
     SUBTRACT[ '-='] = SUBTRACT_ASSIGN
@@ -140,6 +142,9 @@ class MindusLexer(Lexer):
     BITWISE_AND['&='] = AND_ASSIGN
     BITWISE_OR['|='] = OR_ASSIGN
     BITWISE_XOR['^='] = XOR_ASSIGN
+
+    BITWISE_AND['&&'] = LOGICAL_AND
+    BITWISE_OR['||'] = LOGICAL_OR
 
     IDENTIFIER['if'] = IF
     IDENTIFIER['else'] = ELSE
@@ -164,7 +169,18 @@ class MindusParser(Parser):
         ('nonassoc', GREATER_THAN, LESS_THAN, GREATER_THAN_EQ, LESS_THAN_EQ),
         ('left', ADD, SUBTRACT),
         ('left', MULTIPLY, DIVIDE, IDIVIDE, MODULUS),
+        ('right', LOGICAL_NOT, BITWISE_NOT),
     )
+
+    @_('LOGICAL_NOT expr')
+    def expr(self, p):
+        if isinstance(p.expr, NumberNode):
+            return NumberNode(int(not bool(p.expr.value)))
+        return LogicalNotOperation(p.expr)
+
+    @_('BITWISE_NOT expr')
+    def expr(self, p):
+        return BitwiseNotOperation(p.expr)
 
     @_('expr MODULUS expr')
     def expr(self, p):
@@ -443,6 +459,9 @@ def compile_block(block, state):
 class Instruction:
     index: int = None
 
+class EndInstruction(Instruction):
+    def emit(self):
+        return "end"
 
 class SetInstruction(Instruction):
     def __init__(self, output, val):
@@ -494,11 +513,6 @@ class JumpInstruction(Instruction):
         )
 
 
-class ReturnInstruction(Instruction):
-    def emit(self):
-        return "end"
-
-
 class CallInstruction(Instruction):
     def __init__(self, name, *arguments):
         super().__init__()
@@ -535,7 +549,7 @@ class Program:
         if state is None:
             state = {"tokens": ['DISCARD'], "functions": {}, "variables": {}}
         instructions = compile_block(self.units, state)
-        instructions.append(ReturnInstruction())
+        instructions.append(EndInstruction())
         return instructions
 
 
@@ -569,6 +583,114 @@ class FunctionCall:
             state['variables'][function.parameters[i]] = self.arguments[i]
         return compile_block(function.block, state)
 
+    def exit_compile(self, state):
+        if len(self.arguments) != 0:
+            raise ValueError("exit() requires no parameters")
+        return [EndInstruction()]
+
+    def pow_compile(self, state):
+        # TODO specify valid arguments in a decorator of some kind
+        if len(self.arguments) != 2:
+            raise ValueError("pow() requires (number, number) parameters")
+        if isinstance(self.arguments[0], StringNode):
+            raise ValueError("pow() requires (number, number) parameters")
+        if isinstance(self.arguments[1], StringNode):
+            raise ValueError("pow() requires (number, number) parameters")
+        
+        base = self.arguments[0]
+        exponent = self.arguments[1]
+        
+        return PowOperation(base, exponent).compile(state)
+
+    def sqrt_compile(self, state):
+        if len(self.arguments) != 1:
+            raise ValueError("sqrt() requires a numeric or variable parameter")
+        if isinstance(self.arguments[0], StringNode):
+            raise ValueError("sqrt() requires a numeric or variable parameter")
+        
+        return SqrtOperation(self.arguments[0]).compile(state)
+
+    def abs_compile(self, state):
+        if len(self.arguments) != 1:
+            raise ValueError("abs() requires a numeric or variable parameter")
+        if isinstance(self.arguments[0], StringNode):
+            raise ValueError("abs() requires a numeric or variable parameter")
+        
+        return AbsOperation(self.arguments[0]).compile(state)
+
+    def sin_compile(self, state):
+        if len(self.arguments) != 1:
+            raise ValueError("sin() requires a numeric or variable parameter")
+        if isinstance(self.arguments[0], StringNode):
+            raise ValueError("sin() requires a numeric or variable parameter")
+        
+        return SinOperation(self.arguments[0]).compile(state)
+
+    def cos_compile(self, state):
+        if len(self.arguments) != 1:
+            raise ValueError("cos() requires a numeric or variable parameter")
+        if isinstance(self.arguments[0], StringNode):
+            raise ValueError("cos() requires a numeric or variable parameter")
+        
+        return CosOperation(self.arguments[0]).compile(state)
+
+    def tan_compile(self, state):
+        if len(self.arguments) != 1:
+            raise ValueError("tan() requires a numeric or variable parameter")
+        if isinstance(self.arguments[0], StringNode):
+            raise ValueError("tan() requires a numeric or variable parameter")
+        
+        return TanOperation(self.arguments[0]).compile(state)
+
+    def shoot_compile(self, state):
+        # Validate arguments
+        if len(self.arguments) != 3:
+            raise ValueError("shoot() requires (string, int, int) parameters")
+        if isinstance(self.arguments[0], NumberNode):
+            raise ValueError("shoot() requires (string, int, int) parameters")
+        if isinstance(self.arguments[1], StringNode):
+            raise ValueError("shoot() requires (string, int, int) parameters")
+        if isinstance(self.arguments[2], StringNode):
+            raise ValueError("shoot() requires (string, int, int) parameters")
+
+        x = self.arguments[1]
+        y = self.arguments[2]
+        
+        instructions = []
+        with next_token(state) as x_token:
+            # If x is a number, set it as the x argument
+            if isinstance(x, NumberNode):
+                x_token = x.value
+            # If x is a variable, set it as the x argument
+            elif isinstance(x, Variable):
+                x_token = x.name
+            # If x is a subexpression, use a full sub-compile
+            else:
+                instructions.extend(x.compile(state))
+
+            with next_token(state) as y_token:
+                # If y is a number, set it as the y argument
+                if isinstance(y, NumberNode):
+                    y_token = y.value
+                # If y is a variable, set it as the y argument
+                elif isinstance(y, Variable):
+                    y_token = y.name
+                # If y is a subexpression, use a full sub-compile
+                else:
+                    instructions.extend(y.compile(state))
+
+                # Combine instructions
+                instructions.append(CallInstruction(
+                    'control',
+                    'shoot',
+                    self.arguments[0].resolve_string(state),
+                    x_token,
+                    y_token,
+                    1,
+                    0
+                ))
+        return instructions
+
     def print_flush_compile(self, state):
         if len(self.arguments) != 1:
             raise ValueError("print_flush() requires one string argument")
@@ -584,6 +706,11 @@ class FunctionCall:
         instructions = []
         for arg in self.arguments:
             if isinstance(arg, StringNode):
+                instructions.append(CallInstruction(
+                    'print',
+                    '"{}"'.format(arg.value)
+                ))
+            elif isinstance(arg, NumberNode):
                 instructions.append(CallInstruction(
                     'print',
                     '"{}"'.format(arg.value)
@@ -641,6 +768,20 @@ class FunctionCall:
     def compile(self, state):
         if self.name == 'print':
             return self.print_compile(state)
+        elif self.name == 'exit':
+            return self.exit_compile(state)
+        elif self.name == 'pow':
+            return self.pow_compile(state)
+        elif self.name == 'sqrt':
+            return self.sqrt_compile(state)
+        elif self.name == 'abs':
+            return self.abs_compile(state)
+        elif self.name == 'sin':
+            return self.sin_compile(state)
+        elif self.name == 'cos':
+            return self.cos_compile(state)
+        elif self.name == 'tan':
+            return self.tan_compile(state)
         elif self.name == 'sensor':
             return self.sensor_compile(state)
         elif self.name == 'enable':
@@ -649,6 +790,8 @@ class FunctionCall:
             return self.control_enabled_compile(state, 0)
         elif self.name == 'print_flush':
             return self.print_flush_compile(state)
+        elif self.name == 'shoot':
+            return self.shoot_compile(state)
         elif self.name in state['functions']:
             return self.user_function_compile(state)
         else:
@@ -736,6 +879,41 @@ class Conditional:
     false_block: Any
 
     def compile(self, state):
+        if self.false_block is None:
+            return self.if_compile(state)
+        else:
+            return self.if_else_compile(state)
+
+    def if_compile(self, state):
+        block_instructions = compile_block(self.true_block, state)
+        with next_token(state) as token:
+            condition_instructions = self.condition.compile(state)
+
+            # Direct comparison expression
+            if isinstance(self.condition, comparisons):
+                op_instruction = condition_instructions.pop()
+                jump_instruction = JumpInstruction(
+                    len(block_instructions) + 1, # Offset
+                    inverse_comparisons[op_instruction.op], # Operation
+                    op_instruction.left, # Left
+                    op_instruction.right, # Right
+                )
+            # Non-comparison expression, needs to be coerced to bool
+            else:
+                jump_instruction = JumpInstruction(
+                    len(block_instructions) + 1, # Offset
+                    "equal", # Operation
+                    token, # Left
+                    0 # Right
+                )
+
+        instructions = []
+        instructions.extend(condition_instructions)
+        instructions.append(jump_instruction)
+        instructions.extend(block_instructions)
+        return instructions
+
+    def if_else_compile(self, state):
         true_instructions = compile_block(self.true_block, state)
         if isinstance(self.false_block, Conditional):
             false_instructions = self.false_block.compile(state)
@@ -780,6 +958,9 @@ class NumberNode:
         token = state['tokens'][-1]
         return [SetInstruction(token, self.value)]
 
+    def resolve_number(self, state):
+        return self.value
+
 
 @dataclass
 class StringNode:
@@ -799,6 +980,10 @@ class Variable:
 
     def resolve_string(self, state):
         return state['variables'][self.name].value
+
+    def resolve_number(self, state):
+        return self.name
+        
 
 
 @dataclass
@@ -841,6 +1026,66 @@ class BinaryOperation:
         return instructions
 
 
+@dataclass
+class UnaryOperation:
+    operand: Any
+
+    def compile(self, state):
+        output_token = state['tokens'][-1]
+        instructions = []
+
+        with next_token(state) as operand_token:
+            # If operand is a number, simplify it
+            if isinstance(self.operand, NumberNode):
+                operand_token = self.operand.value
+            # If operand is a variable, simplify it
+            elif isinstance(self.operand, Variable):
+                operand_token = self.operand.name
+            # If left is a subexpression, use a full sub-compile
+            else:
+                instructions.extend(self.operand.compile(state))
+
+            instructions.append(
+                OpInstruction(
+                    self.operation, output_token, operand_token, 0
+                )
+            )
+
+        return instructions
+
+
+class AbsOperation(UnaryOperation):
+    operation = 'abs'
+
+
+class SinOperation(UnaryOperation):
+    operation = 'sin'
+
+
+class CosOperation(UnaryOperation):
+    operation = 'cos'
+
+
+class TanOperation(UnaryOperation):
+    operation = 'tan'
+
+
+class SqrtOperation(UnaryOperation):
+    operation = 'sqrt'
+
+
+class BitwiseNotOperation(UnaryOperation):
+    operation = 'not'
+
+
+class LogicalNotOperation(UnaryOperation):
+    operation = 'equal' # operand == 0 flips it as a bool
+
+
+class PowOperation(BinaryOperation):
+    operation = 'pow'
+
+
 class AddOperation(BinaryOperation):
     operation = 'add'
 
@@ -848,7 +1093,7 @@ class AddOperation(BinaryOperation):
 class SubtractOperation(BinaryOperation):
     operation = 'sub'
 
-
+    
 class MultiplyOperation(BinaryOperation):
     operation = 'mul'
 
@@ -940,11 +1185,11 @@ if __name__ == '__main__':
 
     # Compile source
     asm = mdc_compile(source_code, args.verbose)
-
-    # Output script
-    script = "\n".join(asm)
-    if args.output is None:
-        print(script)
-    else:
-        with open(args.output, "w") as f:
-            print(script, file=f)
+    if asm is not None:
+        # Output script
+        script = "\n".join(asm)
+        if args.output is None:
+            print(script)
+        else:
+            with open(args.output, "w") as f:
+                print(script, file=f)
