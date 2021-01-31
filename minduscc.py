@@ -2,11 +2,15 @@
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from pprint import pprint
+from prettyprinter import pprint, install_extras
 from secrets import token_hex
 from typing import List, Any
 
 from sly import Lexer, Parser
+
+
+# Pretty printer dataclasses support
+install_extras(include=['dataclasses'], warn_on_error=True)
 
 
 @contextmanager
@@ -23,7 +27,7 @@ def indent(s, amount=1):
     return str(s).replace('\n', '\n' + '  '*amount)
 
 
-def main(sources, output):
+def main(sources, output, verbose):
     lexer = MindusLexer()
     parser = MindusParser()
     asm = []
@@ -33,97 +37,54 @@ def main(sources, output):
         with open(source, "r") as f:
             raw = f.read()
 
-        # Lex and Parse raw source into AST
+        # Lex and parse raw source into AST
         ast = parser.parse(lexer.tokenize(raw))
         if not ast:
             print("error: compilation failed on", source)
             return
 
+        if verbose:
+            pprint(ast)
+
         # Compile into instructions
         instructions = ast.compile()
 
-        # Optimize up to 16 times
-        for i in range(16):
-            if optimize(instructions) == 0:
-                break
+        # Store jump targets and jump sources for each instruction
+        for instruction in instructions:
+            instruction.jump_sources = set()
+        for i, instruction in enumerate(instructions):
+            if isinstance(instruction, JumpInstruction):
+                instruction.jump_target = instructions[i + instruction.offset]
+                instructions[i + instruction.offset].jump_sources.add(instruction)
+
+        # Assign canonical indices
+        for instruction in instructions:
+            instruction.index = index
+            index += 1
 
         # Emit asm
         for instruction in instructions:
-            instruction.index = index
             asm.append(instruction.emit())
-            index += 1
 
     # Output script
-    script = "\n".join(asm) + "\n"
+    script = "\n".join(asm)
     with open(output, "w") as f:
         print(script, file=f)
-
-
-def optimize(instructions):
-    optimizations = 0
-    i = 0
-    prev_instruction = None
-    while i < len(instructions):
-        # Get references to next and current instruction
-        if i + 1 < len(instructions):
-            next_instruction = instructions[i+1]
-        else:
-            next_instruction = None
-        instruction = instructions[i]
-        # Check for sensor directly into set
-        if (isinstance(instruction, SensorInstruction) and
-                isinstance(next_instruction, SetInstruction) and
-                instruction.output == next_instruction.val):
-            instruction.output = next_instruction.output
-            instructions.pop(i + 1)
-            optimizations += 1
-        # Check for set directly into op
-        if (isinstance(instruction, SetInstruction) and
-                isinstance(next_instruction, OpInstruction) and
-                (instruction.output == next_instruction.right or
-                instruction.output == next_instruction.left)):
-            if instruction.output == next_instruction.right:
-                next_instruction.right = instruction.val
-            else:
-                next_instruction.left = instruction.val
-            instructions.pop(i)
-            optimizations += 1
-        # Check for jumpable op directly into jump
-        if (
-                isinstance(instruction, OpInstruction)
-                and
-                isinstance(next_instruction, JumpInstruction)
-                and
-                instruction.op in jump_operations
-                and
-                next_instruction.op == 'greaterThan'
-                and
-                instruction.output == next_instruction.left
-                and
-                next_instruction.right == 0
-                    ):
-            next_instruction.left = instruction.left
-            next_instruction.right = instruction.right
-            next_instruction.op = instruction.op
-            instructions.pop(i)
-            optimizations += 1
-        # Advance to the next instruction
-        else:
-            i += 1
-            prev_instruction = instruction
-    return optimizations
 
 
 class MindusLexer(Lexer):
     # Set of tokens
     tokens = {
-        IF, ELSE, ELIF,
+        IF, ELSE, ELIF, WHILE,
+        FUNCTION,
         IDENTIFIER, NUMBER_LITERAL, STRING_LITERAL,
-        ADD, SUBTRACT, MULTIPLY, DIVIDE, INT_DIVIDE, MODULUS,
+        ADD, SUBTRACT, MULTIPLY, DIVIDE, IDIVIDE, MODULUS,
         GREATER_THAN, LESS_THAN, GREATER_THAN_EQ, LESS_THAN_EQ,
         EQUALS, NOT_EQUALS, LOGICAL_AND, LOGICAL_OR,
         BITWISE_AND, BITWISE_XOR, BITWISE_OR,
-        ASSIGN,
+        ASSIGN, ADD_ASSIGN, SUBTRACT_ASSIGN, MULTIPLY_ASSIGN,
+        DIVIDE_ASSIGN, IDIVIDE_ASSIGN, MODULUS_ASSIGN,
+        AND_ASSIGN, OR_ASSIGN, XOR_ASSIGN,
         OPEN_PAREN, CLOSE_PAREN,
         OPEN_BRACE, CLOSE_BRACE,
         SEMICOLON, COMMA
@@ -153,21 +114,21 @@ class MindusLexer(Lexer):
         t.value = t.value[1:-1]
         return t
 
-    ADD             = r'\+'
-    SUBTRACT        = r'-'
-    MULTIPLY        = r'\*'
-    DIVIDE          = r'/'
-    INT_DIVIDE      = r'//'
-    MODULUS         = r'%'
+    ADD             = r'\+=?'
+    SUBTRACT        = r'-=?'
+    MULTIPLY        = r'\*=?'
+    DIVIDE          = r'/=?'
+    IDIVIDE         = r'//=?'
+    MODULUS         = r'%=?'
     GREATER_THAN_EQ = r'>='
     GREATER_THAN    = r'>'
     LESS_THAN_EQ    = r'<='
     LESS_THAN       = r'<'
     EQUALS          = r'=='
     NOT_EQUALS      = r'!='
-    BITWISE_AND     = r'&'
-    BITWISE_XOR     = r'\^'
-    BITWISE_OR      = r'\|'
+    BITWISE_AND     = r'&=?'
+    BITWISE_XOR     = r'\^=?'
+    BITWISE_OR      = r'\|=?'
     LOGICAL_AND     = r'&&'
     LOGICAL_OR      = r'\|\|'
     ASSIGN          = r'='
@@ -178,16 +139,30 @@ class MindusLexer(Lexer):
     SEMICOLON       = r';'
     COMMA           = r','
 
+    ADD['+='] = ADD_ASSIGN
+    SUBTRACT[ '-='] = SUBTRACT_ASSIGN
+    MULTIPLY['*='] = MULTIPLY_ASSIGN
+    DIVIDE['/='] = DIVIDE_ASSIGN
+    IDIVIDE['//='] = IDIVIDE_ASSIGN
+    MODULUS['%='] = MODULUS_ASSIGN
+    BITWISE_AND['&='] = AND_ASSIGN
+    BITWISE_OR['|='] = OR_ASSIGN
+    BITWISE_XOR['^='] = XOR_ASSIGN
+
     IDENTIFIER['if'] = IF
     IDENTIFIER['else'] = ELSE
     IDENTIFIER['elif'] = ELIF
+    IDENTIFIER['while'] = WHILE
+    IDENTIFIER['function'] = FUNCTION
 
 
 class MindusParser(Parser):
     start = 'program'
     tokens = MindusLexer.tokens
     precedence = (
-        ('right', ASSIGN),
+        ('left', ELSE),
+        ('right', ASSIGN, ADD_ASSIGN, SUBTRACT_ASSIGN, MULTIPLY_ASSIGN, DIVIDE_ASSIGN,
+                  IDIVIDE_ASSIGN, MODULUS_ASSIGN, AND_ASSIGN, OR_ASSIGN, XOR_ASSIGN),
         ('left', LOGICAL_OR),
         ('left', LOGICAL_AND),
         ('left', BITWISE_OR),
@@ -196,7 +171,7 @@ class MindusParser(Parser):
         ('nonassoc', EQUALS, NOT_EQUALS),
         ('nonassoc', GREATER_THAN, LESS_THAN, GREATER_THAN_EQ, LESS_THAN_EQ),
         ('left', ADD, SUBTRACT),
-        ('left', MULTIPLY, DIVIDE, INT_DIVIDE, MODULUS),
+        ('left', MULTIPLY, DIVIDE, IDIVIDE, MODULUS),
     )
 
     @_('expr MODULUS expr')
@@ -205,7 +180,7 @@ class MindusParser(Parser):
             return NumberNode(p[0].value % p[2].value)
         return ModulusOperation(p[0], p[2])
 
-    @_('expr INT_DIVIDE expr')
+    @_('expr IDIVIDE expr')
     def expr(self, p):
         if isinstance(p[0], NumberNode) and isinstance(p[2], NumberNode):
             return NumberNode(p[0].value // p[2].value)
@@ -344,6 +319,19 @@ class MindusParser(Parser):
         p[0].append(p[2])
         return p[0]
 
+    @_('')
+    def parameters(self, p):
+        return []
+
+    @_('IDENTIFIER')
+    def parameters(self, p):
+        return [p[0]]
+
+    @_('parameters COMMA IDENTIFIER')
+    def parameters(self, p):
+        p[0].append(p[2])
+        return p[0]
+
     @_('IDENTIFIER OPEN_PAREN arguments CLOSE_PAREN')
     def function_call(self, p):
         return FunctionCall(p[0], p[2])
@@ -352,18 +340,63 @@ class MindusParser(Parser):
     def assignment(self, p):
         return Assignment(p[0], p[2])
 
-    @_('assignment SEMICOLON', 'function_call SEMICOLON')
+    @_('IDENTIFIER ADD_ASSIGN expr')
+    def assignment(self, p):
+        return Assignment(p[0], AddOperation(Variable(p[0]), p[2]))
+
+    @_('IDENTIFIER SUBTRACT_ASSIGN expr')
+    def assignment(self, p):
+        return Assignment(p[0], SubtractOperation(Variable(p[0]), p[2]))
+
+    @_('IDENTIFIER MULTIPLY_ASSIGN expr')
+    def assignment(self, p):
+        return Assignment(p[0], MultiplyOperation(Variable(p[0]), p[2]))
+
+    @_('IDENTIFIER DIVIDE_ASSIGN expr')
+    def assignment(self, p):
+        return Assignment(p[0], DivideOperation(Variable(p[0]), p[2]))
+
+    @_('IDENTIFIER IDIVIDE_ASSIGN expr')
+    def assignment(self, p):
+        return Assignment(p[0], IntDivideOperation(Variable(p[0]), p[2]))
+
+    @_('IDENTIFIER MODULUS_ASSIGN expr')
+    def assignment(self, p):
+        return Assignment(p[0], ModulusOperation(Variable(p[0]), p[2]))
+
+    @_('IDENTIFIER AND_ASSIGN expr')
+    def assignment(self, p):
+        return Assignment(p[0], BitwiseAndOperation(Variable(p[0]), p[2]))
+
+    @_('IDENTIFIER OR_ASSIGN expr')
+    def assignment(self, p):
+        return Assignment(p[0], BitwiseOrOperation(Variable(p[0]), p[2]))
+
+    @_('IDENTIFIER XOR_ASSIGN expr')
+    def assignment(self, p):
+        return Assignment(p[0], BitwiseXorOperation(Variable(p[0]), p[2]))
+
+    @_('assignment SEMICOLON', 'function_call SEMICOLON', 'function_def')
     def statement(self, p):
         return p[0]
 
-    @_('statement', 'if_statement')
+    @_('statement', 'if_statement', 'while_loop')
     def block(self, p):
         return [p[0]]
 
-    @_('block if_statement', 'block statement')
+    @_('block if_statement', 'block statement', 'block while_loop')
     def block(self, p):
         p[0].append(p[1])
         return p[0]
+
+    @_("FUNCTION IDENTIFIER OPEN_PAREN parameters CLOSE_PAREN OPEN_BRACE block CLOSE_BRACE")
+    def function_def(self, p):
+        function_name = p[1]
+        return DefineFunction(function_name, p.parameters, p.block)
+
+    @_('WHILE OPEN_PAREN expr CLOSE_PAREN OPEN_BRACE block CLOSE_BRACE')
+    def while_loop(self, p):
+        return Loop(p.expr, p.block)
 
     @_('IF OPEN_PAREN expr CLOSE_PAREN OPEN_BRACE block CLOSE_BRACE')
     def if_statement(self, p):
@@ -393,11 +426,15 @@ class MindusParser(Parser):
     def else_statement(self, p):
         return p.block
 
-    @_('statement', 'if_statement')
+    @_('ELSE if_statement')
+    def else_statement(self, p):
+        return p.if_statement
+
+    @_('statement', 'if_statement', 'while_loop')
     def program(self, p):
         return Program([p[0]])
 
-    @_('program if_statement', 'program statement')
+    @_('program if_statement', 'program statement', 'program while_loop')
     def program(self, p):
         p.program.units.append(p[1])
         return p.program
@@ -444,35 +481,25 @@ class OpInstruction(Instruction):
             self.right
         )
 
-jump_operations = {
-    "equal", "notEqual",
-    "lessThan", "lessThanEq",
-    "greaterThan", "greaterThanEq",
-}
+
 class JumpInstruction(Instruction):
-    def __init__(self, offset, op, left, right):
+    def __init__(self, offset, op='always', left=0, right=0):
         super().__init__()
         self.offset = offset
         self.op = op
         self.left = left
         self.right = right
 
+    def __hash__(self):
+        return hash(id(self))
+
     def emit(self):
         return "jump {} {} {} {}".format(
-            self.index + self.offset,
+            self.jump_target.index,
             self.op,
             self.left,
             self.right
         )
-
-
-class GotoInstruction(Instruction):
-    def __init__(self, offset):
-        super().__init__()
-        self.offset = offset
-
-    def emit(self):
-        return "jump {} always 0 0".format(self.index + self.offset)
 
 
 class ReturnInstruction(Instruction):
@@ -511,23 +538,44 @@ class SensorInstruction(Instruction):
 @dataclass
 class Program:
     units: List[Any]
-    def __str__(self):
-        return "Program(\n  units=[\n    {}\n  ]\n)".format(
-            indent(",\n  ".join(indent(s) for s in self.units))
-        )
 
     def compile(self, state=None):
         if state is None:
-            state = {"tokens": ['discard']}
+            state = {"tokens": ['DISCARD'], "functions": {}, "variables": {}}
         instructions = compile_block(self.units, state)
         instructions.append(ReturnInstruction())
         return instructions
 
 
 @dataclass
+class DefineFunction:
+    name: str
+    parameters: List[Any]
+    block: Any
+
+    def compile(self, state=None):
+        state['functions'][self.name] = self
+        return []
+
+
+@dataclass
 class FunctionCall:
     name: str
     arguments: List[Any]
+
+    def user_function_compile(self, state):
+        function = state['functions'][self.name]
+        if len(self.arguments) != len(function.parameters):
+            raise ValueError(
+                "{} requires {} parameters - received {}".format(
+                    self.name,
+                    len(function.parameters),
+                    len(self.arguments)
+                )
+            )
+        for i in range(len(self.arguments)):
+            state['variables'][function.parameters[i]] = self.arguments[i]
+        return compile_block(function.block, state)
 
     def print_flush_compile(self, state):
         if len(self.arguments) != 1:
@@ -549,10 +597,16 @@ class FunctionCall:
                     '"{}"'.format(arg.value)
                 ))
             elif isinstance(arg, Variable):
-                instructions.append(CallInstruction(
-                    'print',
-                    arg.name
-                ))
+                if arg.name in state['variables']:
+                    instructions.append(CallInstruction(
+                        'print',
+                        '"{}"'.format(state['variables'][arg.name])
+                    ))
+                else:
+                    instructions.append(CallInstruction(
+                        'print',
+                        arg.name
+                    ))
             else:
                 with next_token(state) as token:
                     instructions.extend(arg.compile(state))
@@ -565,6 +619,8 @@ class FunctionCall:
     def control_enabled_compile(self, state, status):
         instructions = []
         for arg in self.arguments:
+            if isinstance(arg, Variable):
+                arg = state['variables'][arg.name]
             if not isinstance(arg, StringNode):
                 raise TypeError("cannot call enable/disable on non-string literal")
             instructions.append(CallInstruction(
@@ -578,14 +634,16 @@ class FunctionCall:
             raise ValueError("sensor() requires two arguments")
 
         for arg in self.arguments:
+            if isinstance(arg, Variable):
+                arg = state['variables'][arg.name]
             if not isinstance(arg, StringNode):
                 raise TypeError("sensor() requires two string literal argumentss")
 
         token = state['tokens'][-1]
         return [SensorInstruction(
             token,
-            self.arguments[0].value,
-            "@{}".format(self.arguments[1].value)
+            self.arguments[0].resolve_string(state),
+            "@{}".format(self.arguments[1].resolve_string(state))
         )]
 
     def compile(self, state):
@@ -599,11 +657,10 @@ class FunctionCall:
             return self.control_enabled_compile(state, 0)
         elif self.name == 'print_flush':
             return self.print_flush_compile(state)
+        elif self.name in state['functions']:
+            return self.user_function_compile(state)
         else:
-            return [CallInstruction(
-                self.name,
-                *self.arguments
-            )]
+            raise ValueError("Unrecognized function '{}'".format(self.name))
 
 
 @dataclass
@@ -612,9 +669,71 @@ class Assignment:
     value: Any
 
     def compile(self, state):
-        with next_token(state) as token:
+        # If value is a string, store as a string variable
+        if isinstance(self.value, StringNode):
+            state['variables'][self.identifier] = self.value
+            return []
+        # If value is a number, skip indirection
+        elif isinstance(self.value, NumberNode):
+            return [SetInstruction(self.identifier, self.value.value)]
+        # If value is a variable reference, skip indirection
+        elif isinstance(self.value, Variable):
+            return [SetInstruction(self.identifier, self.value.name)]
+        # If value is a binary operation where the left side is the same
+        # as the target of this assignment, this is an in-place assignment
+        elif isinstance(self.value, BinaryOperation) and isinstance(self.value.left, Variable) and self.value.left.name == self.identifier:
             instructions = self.value.compile(state)
-            instructions.append(SetInstruction(self.identifier, token))
+            op_instruction = instructions.pop()
+            op_instruction.output = self.identifier
+            instructions.append(op_instruction)
+            return instructions
+        # Full indirect assignment
+        else:
+            with next_token(state) as token:
+                instructions = self.value.compile(state)
+                instructions.append(SetInstruction(self.identifier, token))
+            return instructions
+
+
+@dataclass
+class Loop:
+    condition: Any
+    block: Any
+
+    def compile(self, state):
+        block_instructions = compile_block(self.block, state)
+
+        with next_token(state) as token:
+            condition_instructions = self.condition.compile(state)
+            # Direct comparison expression
+            if isinstance(self.condition, comparisons):
+                op_instruction = condition_instructions.pop()
+                jump_instruction = JumpInstruction(
+                    len(block_instructions) + 2, # Offset
+                    inverse_comparisons[op_instruction.op], # Operation
+                    op_instruction.left, # Left
+                    op_instruction.right, # Right
+                )
+            # Non-comparison expression, needs to be coerced to bool
+            else:
+                jump_instruction = JumpInstruction(
+                    len(block_instructions) + 2, # Offset
+                    "greaterThan", # Operation
+                    token, # Left
+                    0 # Right
+                )
+
+
+        instructions = []
+
+        # Check to escape the loop
+        instructions.extend(condition_instructions)
+        instructions.append(jump_instruction)
+        # Run the loop body
+        instructions.extend(block_instructions)
+        # Return to the check
+        instructions.append(JumpInstruction(-len(instructions)))
+
         return instructions
 
 
@@ -623,13 +742,6 @@ class Conditional:
     condition: Any
     true_block: Any
     false_block: Any
-
-    def __str__(self):
-        return "Cond(\n  expr={}\n  true={}\n  false={}\n)".format(
-            indent(self.condition),
-            indent(self.true_block),
-            indent(self.false_block)
-        )
 
     def compile(self, state):
         true_instructions = compile_block(self.true_block, state)
@@ -640,18 +752,30 @@ class Conditional:
 
         with next_token(state) as token:
             condition_instructions = self.condition.compile(state)
-            jump_instruction = JumpInstruction(
-                len(false_instructions) + 2, # Offset
-                "greaterThan", # Operation
-                token, # Left
-                0 # Right
-            )
+
+            # Direct comparison expression
+            if isinstance(self.condition, comparisons):
+                op_instruction = condition_instructions.pop()
+                jump_instruction = JumpInstruction(
+                    len(false_instructions) + 2, # Offset
+                    inverse_comparisons[op_instruction.op], # Operation
+                    op_instruction.left, # Left
+                    op_instruction.right, # Right
+                )
+            # Non-comparison expression, needs to be coerced to bool
+            else:
+                jump_instruction = JumpInstruction(
+                    len(false_instructions) + 2, # Offset
+                    "greaterThan", # Operation
+                    token, # Left
+                    0 # Right
+                )
 
         instructions = []
         instructions.extend(condition_instructions)
         instructions.append(jump_instruction)
         instructions.extend(false_instructions)
-        instructions.append(GotoInstruction(len(true_instructions) + 1))
+        instructions.append(JumpInstruction(len(true_instructions) + 1))
         instructions.extend(true_instructions)
         return instructions
 
@@ -669,6 +793,9 @@ class NumberNode:
 class StringNode:
     value: str
 
+    def resolve_string(self, state):
+        return self.value
+
 
 @dataclass
 class Variable:
@@ -677,6 +804,9 @@ class Variable:
     def compile(self, state):
         token = state['tokens'][-1]
         return [SetInstruction(token, self.name)]
+
+    def resolve_string(self, state):
+        return state['variables'][self.name].value
 
 
 @dataclass
@@ -689,10 +819,26 @@ class BinaryOperation:
         instructions = []
 
         with next_token(state) as left_token:
-            instructions.extend(self.left.compile(state))
+            # If left is a number, set it as the left operand
+            if isinstance(self.left, NumberNode):
+                left_token = self.left.value
+            # If left is a variable, set it as the left operand
+            elif isinstance(self.left, Variable):
+                left_token = self.left.name
+            # If left is a subexpression, use a full sub-compile
+            else:
+                instructions.extend(self.left.compile(state))
 
             with next_token(state) as right_token:
-                instructions.extend(self.right.compile(state))
+                # If right is a number, set it as the right operand
+                if isinstance(self.right, NumberNode):
+                    right_token = self.right.value
+                # If right is a variable, set it as the right operand
+                elif isinstance(self.right, Variable):
+                    right_token = self.right.name
+                # If right is a subexpression, use a full sub-compile
+                else:
+                    instructions.extend(self.right.compile(state))
 
                 instructions.append(
                     OpInstruction(
@@ -771,14 +917,32 @@ class NotEqualCompare(BinaryOperation):
     operation = 'notEqual'
 
 
+comparisons = (
+    EqualCompare, NotEqualCompare,
+    LessThanCompare, LessThanEqCompare,
+    GreaterThanCompare, GreaterThanEqCompare,
+)
+
+
+inverse_comparisons = {
+    'equal': 'notEqual',
+    'notEqual': 'equal',
+    'lessThan': 'greaterThanEq',
+    'greaterThanEq': 'lessThan',
+    'greaterThan': 'lessThanEq',
+    'lessThanEq': 'greaterThan'
+}
+
+
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('source', nargs='+', type=Path)
     parser.add_argument('-o', '--output', default=None)
+    parser.add_argument('-v', '--verbose', action='store_true')
     args = parser.parse_args()
 
     if args.output is None:
         args.output = args.source[0].with_suffix('.mlog')
 
-    main(args.source, args.output)
+    main(args.source, args.output, args.verbose)

@@ -1,5 +1,5 @@
-core = "nucleus1"
-capacity = 13000
+core = "nucleus1";
+capacity = 13000;
 
 function launch_toggle(material, toHome, toLaunch)
 {
@@ -7,6 +7,7 @@ function launch_toggle(material, toHome, toLaunch)
 	{
 		enable(toLaunch);
 		disable(toHome);
+    }
 	else
 	{
 		disable(toLaunch);
@@ -23,3 +24,14 @@ launch_toggle("lead", "unloader11", "unloader12");
 launch_toggle("plastanium", "unloader13", "unloader14");
 launch_toggle("metaglass", "unloader15", "unloader16");
 launch_toggle("graphite", "unloader17", "unloader18");
+
+
+i = 0;
+
+while (i < 5)
+{
+    print("Test ", i, "\n");
+    i += 1;
+}
+
+print_flush("message1");
