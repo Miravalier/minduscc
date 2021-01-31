@@ -27,49 +27,41 @@ def indent(s, amount=1):
     return str(s).replace('\n', '\n' + '  '*amount)
 
 
-def main(sources, output, verbose):
+def mdc_compile(source, verbose=False):
     lexer = MindusLexer()
     parser = MindusParser()
     asm = []
     index = 0
 
-    for source in sources:
-        with open(source, "r") as f:
-            raw = f.read()
+    # Lex and parse raw source into AST
+    ast = parser.parse(lexer.tokenize(source))
+    if not ast:
+        print("error: compilation failed")
+        return
 
-        # Lex and parse raw source into AST
-        ast = parser.parse(lexer.tokenize(raw))
-        if not ast:
-            print("error: compilation failed on", source)
-            return
+    if verbose:
+        pprint(ast)
 
-        if verbose:
-            pprint(ast)
+    # Compile into instructions
+    instructions = ast.compile()
 
-        # Compile into instructions
-        instructions = ast.compile()
+    # Store jump targets and jump sources for each instruction
+    for instruction in instructions:
+        instruction.jump_sources = set()
+    for i, instruction in enumerate(instructions):
+        if isinstance(instruction, JumpInstruction):
+            instruction.jump_target = instructions[i + instruction.offset]
+            instructions[i + instruction.offset].jump_sources.add(instruction)
 
-        # Store jump targets and jump sources for each instruction
-        for instruction in instructions:
-            instruction.jump_sources = set()
-        for i, instruction in enumerate(instructions):
-            if isinstance(instruction, JumpInstruction):
-                instruction.jump_target = instructions[i + instruction.offset]
-                instructions[i + instruction.offset].jump_sources.add(instruction)
+    # Assign canonical indices
+    for instruction in instructions:
+        instruction.index = index
+        index += 1
 
-        # Assign canonical indices
-        for instruction in instructions:
-            instruction.index = index
-            index += 1
-
-        # Emit asm
-        for instruction in instructions:
-            asm.append(instruction.emit())
-
-    # Output script
-    script = "\n".join(asm)
-    with open(output, "w") as f:
-        print(script, file=f)
+    # Emit asm
+    for instruction in instructions:
+        asm.append(instruction.emit())
+    return asm
 
 
 class MindusLexer(Lexer):
@@ -937,12 +929,22 @@ inverse_comparisons = {
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('source', nargs='+', type=Path)
+    parser.add_argument('source', type=Path)
     parser.add_argument('-o', '--output', default=None)
     parser.add_argument('-v', '--verbose', action='store_true')
     args = parser.parse_args()
 
-    if args.output is None:
-        args.output = args.source[0].with_suffix('.mlog')
+    # Read source file
+    with open(args.source, "r") as f:
+        source_code = f.read()
 
-    main(args.source, args.output, args.verbose)
+    # Compile source
+    asm = mdc_compile(source_code, args.verbose)
+
+    # Output script
+    script = "\n".join(asm)
+    if args.output is None:
+        print(script)
+    else:
+        with open(args.output, "w") as f:
+            print(script, file=f)
